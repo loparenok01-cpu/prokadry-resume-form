@@ -1,18 +1,147 @@
-// Базовая логика: форма добавляет резюме в список кандидатов,
-// структурированные поля извлекаются из текста эвристикой.
+// Хранение кандидатов: сервер (/api/candidates), при его отсутствии — localStorage.
 
 const STORAGE_KEY = "prokadry-candidates";
+const STRUCTURED_FIELDS = [
+  ["name", "Имя"],
+  ["desiredPosition", "Желаемая должность"],
+  ["salary", "Зарплата"],
+  ["skills", "Навыки"],
+  ["experience", "Опыт"],
+  ["education", "Образование"],
+  ["contacts", "Контакты"],
+];
+let serverMode = null;
+let currentQuery = "";
+let editingId = null;
+let lastLoaded = [];
 
-function loadCandidates() {
+function loadLocal() {
   try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+    const list = JSON.parse(localStorage.getItem(STORAGE_KEY)) || [];
+    let changed = false;
+    for (const c of list) {
+      if (c && typeof c === "object" && !c.id) {
+        c.id = localId();
+        c.createdAt = c.createdAt || new Date().toISOString();
+        changed = true;
+      }
+    }
+    if (changed) saveLocal(list);
+    return list;
   } catch {
     return [];
   }
 }
 
-function saveCandidates(candidates) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(candidates));
+function saveLocal(list) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(list));
+}
+
+function localId() {
+  return Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 8);
+}
+
+async function detectServer() {
+  if (serverMode !== null) return serverMode;
+  try {
+    const r = await fetch("/api/candidates", { cache: "no-store" });
+    serverMode = r.ok;
+  } catch {
+    serverMode = false;
+  }
+  return serverMode;
+}
+
+function localHaystack(c) {
+  return [c.rawText || "", ...STRUCTURED_FIELDS.map(([k]) => (c.structured || {})[k] || "")]
+    .join(" ")
+    .toLowerCase();
+}
+
+async function fetchCandidates(q) {
+  if (await detectServer()) {
+    try {
+      const url = q
+        ? "/api/candidates?q=" + encodeURIComponent(q)
+        : "/api/candidates";
+      const r = await fetch(url, { cache: "no-store" });
+      if (r.ok) return await r.json();
+    } catch {
+      // сервер пропал — уходим в localStorage
+      serverMode = false;
+    }
+  }
+  let list = loadLocal();
+  const s = (q || "").trim().toLowerCase();
+  if (s) list = list.filter((c) => localHaystack(c).includes(s));
+  return list;
+}
+
+async function addCandidate(rawText, structured) {
+  if (await detectServer()) {
+    try {
+      const r = await fetch("/api/candidates", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rawText, structured }),
+      });
+      if (r.ok) return await r.json();
+      if (r.status !== 404) return null;
+    } catch {
+      serverMode = false;
+    }
+  }
+  const item = {
+    id: localId(),
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    rawText,
+    structured,
+  };
+  const list = loadLocal();
+  list.unshift(item);
+  saveLocal(list);
+  return item;
+}
+
+async function updateCandidate(id, rawText, structured) {
+  if (await detectServer()) {
+    try {
+      const r = await fetch("/api/candidates/" + encodeURIComponent(id), {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ rawText, structured }),
+      });
+      if (r.ok) return await r.json();
+      if (r.status !== 404) return null;
+    } catch {
+      serverMode = false;
+    }
+  }
+  const list = loadLocal();
+  const item = list.find((c) => c.id === id);
+  if (!item) return null;
+  if (rawText) item.rawText = rawText;
+  if (structured) item.structured = structured;
+  item.updatedAt = new Date().toISOString();
+  saveLocal(list);
+  return item;
+}
+
+async function deleteCandidate(id) {
+  if (await detectServer()) {
+    try {
+      const r = await fetch("/api/candidates/" + encodeURIComponent(id), {
+        method: "DELETE",
+      });
+      if (r.ok) return true;
+      if (r.status !== 404) return false;
+    } catch {
+      serverMode = false;
+    }
+  }
+  saveLocal(loadLocal().filter((c) => c.id !== id));
+  return true;
 }
 
 const SKILLS_DICT = [
@@ -459,53 +588,180 @@ async function extractStructuredData(text) {
   return extractByHeuristics(text);
 }
 
-function render() {
-  const candidates = loadCandidates();
+function render(candidates) {
   const list = document.getElementById("candidateList");
   list.innerHTML = "";
 
+  const note = document.getElementById("storageNote");
+  if (note) {
+    note.textContent = serverMode
+      ? "Хранилище: сервер (candidates.json)"
+      : "Хранилище: localStorage (без сервера)";
+  }
+
+  if (!candidates.length) {
+    const empty = document.createElement("li");
+    empty.className = "candidate-empty";
+    empty.textContent = currentQuery ? "Ничего не найдено" : "Кандидатов пока нет";
+    list.appendChild(empty);
+    return;
+  }
+
   candidates.forEach((candidate) => {
     const li = document.createElement("li");
+
+    if (candidate.id === editingId) {
+      renderEditView(li, candidate);
+      list.appendChild(li);
+      return;
+    }
 
     const rawEl = document.createElement("div");
     rawEl.className = "candidate-raw";
     rawEl.textContent = candidate.rawText;
     li.appendChild(rawEl);
 
-    const data = candidate.structured;
-    if (
-      data &&
-      (data.name ||
-        data.desiredPosition ||
-        data.salary ||
-        data.skills ||
-        data.experience ||
-        data.education ||
-        data.contacts)
-    ) {
+    const data = candidate.structured || {};
+    if (STRUCTURED_FIELDS.some(([k]) => data[k])) {
       const structuredEl = document.createElement("div");
       structuredEl.className = "candidate-structured";
-      [
-        ["Имя", data.name],
-        ["Желаемая должность", data.desiredPosition],
-        ["Зарплата", data.salary],
-        ["Навыки", data.skills],
-        ["Опыт", data.experience],
-        ["Образование", data.education],
-        ["Контакты", data.contacts],
-      ].forEach(([label, value]) => {
+      STRUCTURED_FIELDS.forEach(([key, label]) => {
         const row = document.createElement("div");
         const b = document.createElement("b");
         b.textContent = label + ": ";
         row.appendChild(b);
-        row.appendChild(document.createTextNode(value || "—"));
+        row.appendChild(document.createTextNode(data[key] || "—"));
         structuredEl.appendChild(row);
       });
       li.appendChild(structuredEl);
     }
 
+    const actions = document.createElement("div");
+    actions.className = "candidate-actions";
+    const editBtn = document.createElement("button");
+    editBtn.type = "button";
+    editBtn.textContent = "Редактировать";
+    editBtn.addEventListener("click", () => {
+      editingId = candidate.id;
+      render(lastLoaded);
+    });
+    const delBtn = document.createElement("button");
+    delBtn.type = "button";
+    delBtn.textContent = "Удалить";
+    delBtn.addEventListener("click", async () => {
+      if (!confirm("Удалить кандидата?")) return;
+      await deleteCandidate(candidate.id);
+      await refresh();
+    });
+    actions.appendChild(editBtn);
+    actions.appendChild(delBtn);
+    li.appendChild(actions);
+
     list.appendChild(li);
   });
+}
+
+function renderEditView(li, candidate) {
+  const data = candidate.structured || {};
+
+  const rawLabel = document.createElement("label");
+  rawLabel.className = "edit-raw-label";
+  rawLabel.textContent = "Исходный текст";
+  const rawArea = document.createElement("textarea");
+  rawArea.className = "candidate-raw edit-raw";
+  rawArea.rows = 5;
+  rawArea.value = candidate.rawText;
+  li.appendChild(rawLabel);
+  li.appendChild(rawArea);
+
+  const fieldsEl = document.createElement("div");
+  fieldsEl.className = "candidate-structured edit-fields";
+  const inputs = {};
+  STRUCTURED_FIELDS.forEach(([key, label]) => {
+    const row = document.createElement("label");
+    row.className = "edit-row";
+    const b = document.createElement("b");
+    b.textContent = label + ": ";
+    row.appendChild(b);
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = data[key] || "";
+    inputs[key] = input;
+    row.appendChild(input);
+    fieldsEl.appendChild(row);
+  });
+  li.appendChild(fieldsEl);
+
+  const actions = document.createElement("div");
+  actions.className = "candidate-actions";
+  const saveBtn = document.createElement("button");
+  saveBtn.type = "button";
+  saveBtn.className = "primary";
+  saveBtn.textContent = "Сохранить";
+  saveBtn.addEventListener("click", async () => {
+    const structured = {};
+    STRUCTURED_FIELDS.forEach(([key]) => (structured[key] = inputs[key].value.trim()));
+    const updated = await updateCandidate(candidate.id, rawArea.value.trim(), structured);
+    if (updated) {
+      editingId = null;
+      await refresh();
+    }
+  });
+  const cancelBtn = document.createElement("button");
+  cancelBtn.type = "button";
+  cancelBtn.textContent = "Отмена";
+  cancelBtn.addEventListener("click", () => {
+    editingId = null;
+    render(lastLoaded);
+  });
+  actions.appendChild(saveBtn);
+  actions.appendChild(cancelBtn);
+  li.appendChild(actions);
+}
+
+async function refresh() {
+  lastLoaded = await fetchCandidates(currentQuery);
+  render(lastLoaded);
+}
+
+function downloadFile(name, type, content) {
+  const blob = new Blob([content], { type });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+}
+
+function csvCell(value) {
+  return '"' + String(value == null ? "" : value).replace(/"/g, '""') + '"';
+}
+
+function exportJson() {
+  downloadFile(
+    "candidates.json",
+    "application/json;charset=utf-8",
+    JSON.stringify(lastLoaded, null, 2)
+  );
+}
+
+function exportCsv() {
+  const header = ["ID", "Создан", ...STRUCTURED_FIELDS.map(([, label]) => label), "Исходный текст"];
+  const rows = lastLoaded.map((c) => {
+    const s = c.structured || {};
+    return [
+      c.id,
+      c.createdAt || "",
+      ...STRUCTURED_FIELDS.map(([key]) => s[key] || ""),
+      c.rawText || "",
+    ]
+      .map(csvCell)
+      .join(";");
+  });
+  const csv = "\uFEFF" + header.map(csvCell).join(";") + "\r\n" + rows.join("\r\n");
+  downloadFile("candidates.csv", "text/csv;charset=utf-8", csv);
 }
 
 document.getElementById("resumeForm").addEventListener("submit", async (e) => {
@@ -517,14 +773,26 @@ document.getElementById("resumeForm").addEventListener("submit", async (e) => {
   button.disabled = true;
   try {
     const structured = await extractStructuredData(text);
-    const candidates = loadCandidates();
-    candidates.unshift({ rawText: text, structured });
-    saveCandidates(candidates);
+    await addCandidate(text, structured);
     e.target.reset();
-    render();
+    editingId = null;
+    await refresh();
   } finally {
     button.disabled = false;
   }
 });
 
-render();
+let searchTimer = null;
+document.getElementById("candidateSearch").addEventListener("input", (e) => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    currentQuery = e.target.value.trim();
+    editingId = null;
+    refresh();
+  }, 300);
+});
+
+document.getElementById("exportJson").addEventListener("click", exportJson);
+document.getElementById("exportCsv").addEventListener("click", exportCsv);
+
+refresh();

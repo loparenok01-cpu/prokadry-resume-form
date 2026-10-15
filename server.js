@@ -198,6 +198,8 @@ const STATIC_FILES = {
   "/index.html": ["index.html", "text/html; charset=utf-8"],
   "/script.js": ["script.js", "text/javascript; charset=utf-8"],
   "/style.css": ["style.css", "text/css; charset=utf-8"],
+  "/presentation": ["presentation.html", "text/html; charset=utf-8"],
+  "/presentation.html": ["presentation.html", "text/html; charset=utf-8"],
 };
 
 app.get(Object.keys(STATIC_FILES), (req, res) => {
@@ -213,6 +215,108 @@ app.get("/api/health", (req, res) => {
     model: MODEL,
     cert: Boolean(caList),
   });
+});
+
+// ===== Хранилище кандидатов (candidates.json) =====
+
+const CANDIDATES_FILE = path.join(__dirname, "candidates.json");
+const STRUCTURED_KEYS = [
+  "name",
+  "desiredPosition",
+  "salary",
+  "skills",
+  "experience",
+  "education",
+  "contacts",
+];
+
+let candidates = [];
+try {
+  const loaded = JSON.parse(fs.readFileSync(CANDIDATES_FILE, "utf8"));
+  if (Array.isArray(loaded)) {
+    candidates = loaded.filter((c) => c && typeof c === "object" && c.rawText);
+  }
+} catch {
+  candidates = [];
+}
+
+function saveCandidatesFile() {
+  const tmp = CANDIDATES_FILE + ".tmp";
+  fs.writeFileSync(tmp, JSON.stringify(candidates, null, 2), "utf8");
+  fs.renameSync(tmp, CANDIDATES_FILE);
+}
+
+function coerceStructured(s) {
+  const out = {};
+  for (const k of STRUCTURED_KEYS) {
+    out[k] =
+      s && typeof s[k] === "string" ? s[k].trim().slice(0, 4000) : "";
+  }
+  return out;
+}
+
+function candidateHaystack(c) {
+  return [c.rawText || "", ...STRUCTURED_KEYS.map((k) => (c.structured || {})[k] || "")]
+    .join(" ")
+    .toLowerCase();
+}
+
+function findCandidate(id) {
+  return candidates.find((c) => c.id === id);
+}
+
+app.get("/api/candidates", (req, res) => {
+  let list = candidates;
+  const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
+  if (q) list = list.filter((c) => candidateHaystack(c).includes(q));
+  res.json(list);
+});
+
+app.post("/api/candidates", (req, res) => {
+  const body = req.body || {};
+  const rawText = typeof body.rawText === "string" ? body.rawText.trim() : "";
+  if (!rawText) return res.status(400).json({ error: "rawText is required" });
+  if (rawText.length > MAX_TEXT_LENGTH) {
+    return res.status(413).json({ error: "text is too long" });
+  }
+  const now = new Date().toISOString();
+  const item = {
+    id: randomUUID(),
+    createdAt: now,
+    updatedAt: now,
+    rawText,
+    structured: coerceStructured(body.structured),
+  };
+  candidates.unshift(item);
+  saveCandidatesFile();
+  res.status(201).json(item);
+});
+
+app.put("/api/candidates/:id", (req, res) => {
+  const item = findCandidate(req.params.id);
+  if (!item) return res.status(404).json({ error: "not found" });
+  const body = req.body || {};
+  if (typeof body.rawText === "string" && body.rawText.trim()) {
+    const raw = body.rawText.trim();
+    if (raw.length > MAX_TEXT_LENGTH) {
+      return res.status(413).json({ error: "text is too long" });
+    }
+    item.rawText = raw;
+  }
+  if (body.structured && typeof body.structured === "object") {
+    item.structured = coerceStructured(body.structured);
+  }
+  item.updatedAt = new Date().toISOString();
+  saveCandidatesFile();
+  res.json(item);
+});
+
+app.delete("/api/candidates/:id", (req, res) => {
+  const idx = candidates.findIndex((c) => c.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: "not found" });
+  candidates.splice(idx, 1);
+  saveCandidatesFile();
+  res.json({ ok: true });
 });
 
 app.post("/api/extract", async (req, res) => {

@@ -4,6 +4,10 @@
 # Зависимости Node.js
 node_modules/
 
+# Данные кандидатов (персональные данные, только локально)
+candidates.json
+candidates.json.tmp
+
 # Секреты и локальные настройки
 .env
 .env.local
