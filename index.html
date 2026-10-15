@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>ПроКадры — приём резюме</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header>
+  <h1>Кадровое агентство «ПроКадры»</h1>
+  <p>Форма приёма резюме</p>
+</header>
+
+<section id="about">
+  <p>Вставьте текст своего резюме целиком в поле ниже — рекрутёр
+  свяжется с вами, как только рассмотрит анкету.</p>
+</section>
+
+<section id="add-resume">
+  <h2>Отправить резюме</h2>
+  <form id="resumeForm">
+    <label>Текст резюме целиком<br>
+      <textarea id="resumeText" rows="6" placeholder="Например: Иванова Мария, 5 лет опыта в маркетинге. Навыки: SMM, контент-маркетинг, аналитика. Телефон: +7 900 111-22-33." required></textarea>
+    </label><br><br>
+    <button type="submit">Отправить резюме</button>
+  </form>
+</section>
+
+<section id="candidates">
+  <h2>Кандидаты</h2>
+  <ul id="candidateList"></ul>
+</section>
+
+<footer>
+  <p>ПроКадры — подбор персонала для бизнеса</p>
+</footer>
+
+<script src="script.js"></script>
+</body>
+</html>

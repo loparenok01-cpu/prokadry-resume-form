@@ -1,0 +1,85 @@
+body {
+  font-family: system-ui, Arial, sans-serif;
+  background: #f3f0fa;
+  margin: 0;
+  color: #241f33;
+}
+
+header {
+  background: #5b3ba0;
+  color: #ffffff;
+  text-align: center;
+  padding: 20px 10px;
+}
+
+header h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+section, footer {
+  max-width: 600px;
+  margin: 14px auto;
+  padding: 14px 18px;
+  background: #ffffff;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+}
+
+h2 {
+  font-size: 16px;
+  color: #5b3ba0;
+}
+
+#resumeForm textarea {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px;
+  font-family: inherit;
+  border: 1px solid #cccccc;
+  border-radius: 4px;
+}
+
+#resumeForm button {
+  background: #5b3ba0;
+  color: #ffffff;
+  border: none;
+  padding: 8px 18px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+#candidateList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+#candidateList li {
+  padding: 10px 0;
+  border-bottom: 1px solid #eeeeee;
+}
+
+.candidate-raw {
+  font-size: 13px;
+  color: #555555;
+  white-space: pre-wrap;
+}
+
+.candidate-structured {
+  margin-top: 6px;
+  padding: 8px 10px;
+  background: #f3f0fa;
+  border-left: 3px solid #5b3ba0;
+  font-size: 13px;
+}
+
+.candidate-structured div {
+  margin-bottom: 2px;
+}
+
+footer {
+  text-align: center;
+  font-size: 12px;
+  color: #666666;
+}
