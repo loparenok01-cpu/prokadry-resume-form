@@ -1,0 +1,15 @@
+{
+  "name": "prokadry-resume",
+  "version": "1.0.0",
+  "description": "Форма приёма резюме кадрового агентства «ПроКадры»: эвристика + GigaChat API",
+  "private": true,
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node .temp/heuristics-test.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.7",
+    "express": "^4.21.2"
+  }
+}
