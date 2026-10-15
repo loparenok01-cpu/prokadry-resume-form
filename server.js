@@ -5,9 +5,10 @@ const https = require("https");
 const tls = require("tls");
 const fs = require("fs");
 const path = require("path");
-const { randomUUID } = require("crypto");
+const { randomUUID, createHash, timingSafeEqual } = require("crypto");
 
 const PORT = Number(process.env.PORT) || 3000;
+const HOST = process.env.HOST || "127.0.0.1";
 const AUTH_KEY = process.env.GIGACHAT_AUTH_KEY || "";
 const SCOPE = process.env.GIGACHAT_SCOPE || "GIGACHAT_API_PERS";
 const MODEL = process.env.GIGACHAT_MODEL || "GigaChat-2-Pro";
@@ -20,9 +21,12 @@ const API_URL =
 const CA_PATH = process.env.GIGACHAT_CA_BUNDLE
   ? path.resolve(process.env.GIGACHAT_CA_BUNDLE)
   : path.join(__dirname, "certs", "russian_trusted_root_ca_pem.crt");
+const APP_TOKEN = process.env.APP_TOKEN || "";
 
 const MAX_TEXT_LENGTH = 60000;
 const REQUEST_TIMEOUT_MS = 60000;
+const RATE_LIMIT_MAX = Number(process.env.RATE_LIMIT_MAX) || 10;
+const RATE_WINDOW_MS = 60000;
 
 let caList = null;
 if (fs.existsSync(CA_PATH)) {
@@ -116,8 +120,8 @@ const SYSTEM_PROMPT = [
   'name — ФИО кандидата;',
   "desiredPosition — желаемая должность или цель (например «Цель: Бухгалтер»);",
   "salary — желаемая зарплата или вилка;",
-  "skills — ключевые навыки через запятую;",
-  "experience — краткий опыт (должность, организация, периоды) через запятую;",
+  "skills — ключевые навыки через запятую; если отдельного раздела навыков нет — обобщи типовые обязанности в 10–18 навыков (не перечисляй текст обязанностей);",
+  "experience — краткий опыт: до 4 самых свежих мест работы в формате «период: должность, организация», места через точку с запятой; остальные — одной строкой вида «ранее: N мест работы (годы)»; однотипные обязанности не перечисляй;",
   "education — краткое образование (вуз, специальность, год) через запятую;",
   "contacts — контакты через запятую (телефон, email, telegram).",
   "Все значения — строки на русском языке.",
@@ -193,6 +197,64 @@ async function extractWithGigaChat(text) {
 const app = express();
 app.use(express.json({ limit: "600kb" }));
 
+function safeEqual(a, b) {
+  const ha = createHash("sha256").update(String(a)).digest();
+  const hb = createHash("sha256").update(String(b)).digest();
+  return timingSafeEqual(ha, hb);
+}
+
+function requireAuth(req, res, next) {
+  if (!APP_TOKEN) {
+    return res.status(503).json({ error: "APP_TOKEN is not set" });
+  }
+  const header = String(req.headers.authorization || "");
+  const provided = header.startsWith("Bearer ") ? header.slice(7) : "";
+  if (!provided || !safeEqual(provided, APP_TOKEN)) {
+    return res.status(401).json({ error: "unauthorized" });
+  }
+  next();
+}
+
+function createRateLimiter(name, max, windowMs) {
+  const buckets = new Map();
+  const sweep = setInterval(() => {
+    const now = Date.now();
+    for (const [key, hits] of buckets) {
+      const alive = hits.filter((t) => now - t < windowMs);
+      if (alive.length) buckets.set(key, alive);
+      else buckets.delete(key);
+    }
+  }, windowMs);
+  if (sweep.unref) sweep.unref();
+  return function rateLimit(req, res, next) {
+    const ip = (req.socket && req.socket.remoteAddress) || "unknown";
+    const key = ip + "|" + name;
+    const now = Date.now();
+    let hits = buckets.get(key);
+    if (!hits) {
+      hits = [];
+      buckets.set(key, hits);
+    }
+    while (hits.length && now - hits[0] >= windowMs) hits.shift();
+    if (hits.length >= max) {
+      const wait = Math.ceil((windowMs - (now - hits[0])) / 1000);
+      res.set("Retry-After", String(wait));
+      return res
+        .status(429)
+        .json({ error: "rate limit exceeded, retry in " + wait + "s" });
+    }
+    hits.push(now);
+    next();
+  };
+}
+
+const extractLimiter = createRateLimiter("extract", RATE_LIMIT_MAX, RATE_WINDOW_MS);
+const postCandidateLimiter = createRateLimiter(
+  "post-candidate",
+  RATE_LIMIT_MAX,
+  RATE_WINDOW_MS
+);
+
 const STATIC_FILES = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/index.html": ["index.html", "text/html; charset=utf-8"],
@@ -214,12 +276,15 @@ app.get("/api/health", (req, res) => {
     ai: Boolean(AUTH_KEY),
     model: MODEL,
     cert: Boolean(caList),
+    auth: Boolean(APP_TOKEN),
   });
 });
 
 // ===== Хранилище кандидатов (candidates.json) =====
 
-const CANDIDATES_FILE = path.join(__dirname, "candidates.json");
+const CANDIDATES_FILE = process.env.CANDIDATES_FILE
+  ? path.resolve(process.env.CANDIDATES_FILE)
+  : path.join(__dirname, "candidates.json");
 const STRUCTURED_KEYS = [
   "name",
   "desiredPosition",
@@ -265,14 +330,14 @@ function findCandidate(id) {
   return candidates.find((c) => c.id === id);
 }
 
-app.get("/api/candidates", (req, res) => {
+app.get("/api/candidates", requireAuth, (req, res) => {
   let list = candidates;
   const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
   if (q) list = list.filter((c) => candidateHaystack(c).includes(q));
   res.json(list);
 });
 
-app.post("/api/candidates", (req, res) => {
+app.post("/api/candidates", postCandidateLimiter, (req, res) => {
   const body = req.body || {};
   const rawText = typeof body.rawText === "string" ? body.rawText.trim() : "";
   if (!rawText) return res.status(400).json({ error: "rawText is required" });
@@ -292,7 +357,7 @@ app.post("/api/candidates", (req, res) => {
   res.status(201).json(item);
 });
 
-app.put("/api/candidates/:id", (req, res) => {
+app.put("/api/candidates/:id", requireAuth, (req, res) => {
   const item = findCandidate(req.params.id);
   if (!item) return res.status(404).json({ error: "not found" });
   const body = req.body || {};
@@ -311,7 +376,7 @@ app.put("/api/candidates/:id", (req, res) => {
   res.json(item);
 });
 
-app.delete("/api/candidates/:id", (req, res) => {
+app.delete("/api/candidates/:id", requireAuth, (req, res) => {
   const idx = candidates.findIndex((c) => c.id === req.params.id);
   if (idx === -1) return res.status(404).json({ error: "not found" });
   candidates.splice(idx, 1);
@@ -319,7 +384,7 @@ app.delete("/api/candidates/:id", (req, res) => {
   res.json({ ok: true });
 });
 
-app.post("/api/extract", async (req, res) => {
+app.post("/api/extract", extractLimiter, async (req, res) => {
   const text = req.body && req.body.text;
   if (typeof text !== "string" || !text.trim()) {
     return res.status(400).json({ error: "text is required" });
@@ -336,14 +401,15 @@ app.post("/api/extract", async (req, res) => {
     const data = await extractWithGigaChat(text.trim());
     return res.json(data);
   } catch (err) {
-    return res.status(502).json({ error: String(err.message || err) });
+    console.error("[extract] 502:", err && err.message ? err.message : err);
+    return res.status(502).json({ error: "extract failed" });
   }
 });
 
 app.use((req, res) => res.status(404).end());
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log(
-    `Prokadry server: http://localhost:${PORT} (AI=${AUTH_KEY ? "on" : "off"}, cert=${caList ? "ok" : "missing"}, model=${MODEL})`
+    `Prokadry server: http://${HOST}:${PORT} (AI=${AUTH_KEY ? "on" : "off"}, cert=${caList ? "ok" : "missing"}, model=${MODEL})`
   );
 });

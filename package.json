@@ -6,7 +6,7 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "test": "node .temp/heuristics-test.js"
+    "test": "node .temp/heuristics-test.js && node .temp/api-test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

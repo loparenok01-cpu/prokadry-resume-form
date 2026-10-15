@@ -1,6 +1,40 @@
 // Хранение кандидатов: сервер (/api/candidates), при его отсутствии — localStorage.
 
 const STORAGE_KEY = "prokadry-candidates";
+const TOKEN_KEY = "prokadry-token";
+
+(function captureToken() {
+  try {
+    const p = new URLSearchParams(window.location.search);
+    const t = (p.get("token") || "").trim();
+    if (t) {
+      sessionStorage.setItem(TOKEN_KEY, t);
+      p.delete("token");
+      history.replaceState(
+        null,
+        "",
+        window.location.pathname + (p.toString() ? "?" + p.toString() : "") + window.location.hash
+      );
+    }
+  } catch (e) {}
+})();
+
+function getToken() {
+  try {
+    return sessionStorage.getItem(TOKEN_KEY) || "";
+  } catch (e) {
+    return "";
+  }
+}
+
+function authHeaders() {
+  const t = getToken();
+  return t ? { Authorization: "Bearer " + t } : {};
+}
+
+function authAlert() {
+  alert("Нет доступа: задайте APP_TOKEN в .env и откройте страницу с ?token=ВАШ_ТОКЕН");
+}
 const STRUCTURED_FIELDS = [
   ["name", "Имя"],
   ["desiredPosition", "Желаемая должность"],
@@ -11,6 +45,8 @@ const STRUCTURED_FIELDS = [
   ["contacts", "Контакты"],
 ];
 let serverMode = null;
+let listStatus = "";
+let lastSaveError = "";
 let currentQuery = "";
 let editingId = null;
 let lastLoaded = [];
@@ -44,7 +80,7 @@ function localId() {
 async function detectServer() {
   if (serverMode !== null) return serverMode;
   try {
-    const r = await fetch("/api/candidates", { cache: "no-store" });
+    const r = await fetch("/api/health", { cache: "no-store" });
     serverMode = r.ok;
   } catch {
     serverMode = false;
@@ -64,13 +100,24 @@ async function fetchCandidates(q) {
       const url = q
         ? "/api/candidates?q=" + encodeURIComponent(q)
         : "/api/candidates";
-      const r = await fetch(url, { cache: "no-store" });
-      if (r.ok) return await r.json();
+      const r = await fetch(url, {
+        cache: "no-store",
+        headers: authHeaders(),
+      });
+      if (r.ok) {
+        listStatus = "ok";
+        return await r.json();
+      }
+      if (r.status === 401 || r.status === 503) {
+        listStatus = "unauthorized";
+        return [];
+      }
     } catch {
       // сервер пропал — уходим в localStorage
       serverMode = false;
     }
   }
+  listStatus = "off";
   let list = loadLocal();
   const s = (q || "").trim().toLowerCase();
   if (s) list = list.filter((c) => localHaystack(c).includes(s));
@@ -78,6 +125,7 @@ async function fetchCandidates(q) {
 }
 
 async function addCandidate(rawText, structured) {
+  lastSaveError = "";
   if (await detectServer()) {
     try {
       const r = await fetch("/api/candidates", {
@@ -86,7 +134,13 @@ async function addCandidate(rawText, structured) {
         body: JSON.stringify({ rawText, structured }),
       });
       if (r.ok) return await r.json();
-      if (r.status !== 404) return null;
+      if (r.status !== 404) {
+        lastSaveError =
+          r.status === 429
+            ? "слишком много запросов, подождите минуту"
+            : "ошибка сервера HTTP " + r.status;
+        return null;
+      }
     } catch {
       serverMode = false;
     }
@@ -109,10 +163,14 @@ async function updateCandidate(id, rawText, structured) {
     try {
       const r = await fetch("/api/candidates/" + encodeURIComponent(id), {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...authHeaders() },
         body: JSON.stringify({ rawText, structured }),
       });
       if (r.ok) return await r.json();
+      if (r.status === 401 || r.status === 503) {
+        authAlert();
+        return null;
+      }
       if (r.status !== 404) return null;
     } catch {
       serverMode = false;
@@ -133,8 +191,13 @@ async function deleteCandidate(id) {
     try {
       const r = await fetch("/api/candidates/" + encodeURIComponent(id), {
         method: "DELETE",
+        headers: authHeaders(),
       });
       if (r.ok) return true;
+      if (r.status === 401 || r.status === 503) {
+        authAlert();
+        return false;
+      }
       if (r.status !== 404) return false;
     } catch {
       serverMode = false;
@@ -315,6 +378,35 @@ function condenseFragments(raw) {
   return out.map((x) => x.v).join(", ");
 }
 
+const DUTY_SKILL_MAP = [
+  [/кадров[а-яё]*\s+делопроизводств|оформление\s+при[её]ма\s+на\s+работу/i, "Кадровое делопроизводство"],
+  [/трудов[а-яё]*\s+кни/i, "Трудовые книжки"],
+  [/трудов[а-яё]*\s+договор/i, "Трудовые договоры и соглашения"],
+  [/штатн[а-яё]*\s+расписани/i, "Штатное расписание"],
+  [/график[а-яё]*\s+отпуск/i, "Графики отпусков"],
+  [/табел[а-яё]*\s+уч[её]та\s+рабочего\s+времени/i, "Табель учета рабочего времени"],
+  [/личн[а-яё]*\s+дел/i, "Личные дела сотрудников"],
+  [/воинск[а-яё]*\s+уч[её]т/i, "Воинский учет"],
+  [/подсч[её]т[а-яё]*\s+стажа|начислен[а-яё]*\s+стажа/i, "Подсчет стажа"],
+  [/(?:СЗВ[-\s]?Р|ЕФС[-\s]?1)/i, "Кадровая отчетность СЗВ-Р/ЕФС-1"],
+  [/1\s*[СC]\s*[:\-]?\s*ЗУП/i, "1С:ЗУП"],
+  [/ЕКАСУТР/i, "ЕКАСУТР"],
+  [/суммированн[а-яё]*\s+уч[её]т/i, "Суммированный учет рабочего времени"],
+  [/командиров/i, "Командировки"],
+  [/локальн[а-яё]*\s+акт/i, "Локальные нормативные акты"],
+  [/должностн[а-яё]*\s+инструкц/i, "Должностные инструкции"],
+  [/справ[а-яё]+\s+с\s+места\s+работы/i, "Справки с места работы"],
+  [/(?:карточк[а-яё]*\s+формы\s+)?Т[-\s]?2\b/i, "Кадровые карточки Т-2"],
+];
+
+function generalizeDuties(text) {
+  const out = [];
+  for (const [re, label] of DUTY_SKILL_MAP) {
+    if (re.test(text)) out.push(label);
+  }
+  return out;
+}
+
 function extractSkills(lines, text) {
   const labeled = labeledBlock(lines, [
     /(?:профессиональные\s+|ключевые\s+)?навыки(?:\s+и\s+компетенции)?\s*[:：]\s*(.*)$/i,
@@ -331,14 +423,22 @@ function extractSkills(lines, text) {
     );
     if (re.test(text)) found.push(skill);
   }
-  const uniq = [...new Set(found)];
-  return uniq
+  const merged = [];
+  const seen = new Set();
+  for (const skill of [...generalizeDuties(text), ...found]) {
+    const key = skill.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    merged.push(skill);
+  }
+  return merged
     .filter(
       (s) =>
-        !uniq.some(
+        !merged.some(
           (t) => t !== s && t.toLowerCase().includes(s.toLowerCase())
         )
     )
+    .slice(0, 20)
     .join(", ");
 }
 
@@ -378,6 +478,122 @@ function condenseExperience(raw) {
   return head ? `${head}: ${fragments.join(", ")}` : fragments.join(", ");
 }
 
+const EXP_PERIOD_RE =
+  /^((?:\d{1,2}[\/.](?:19|20)\d{2})|(?:19|20)\d{2})\s*[-–—]\s*((?:\d{1,2}[\/.](?:19|20)\d{2})|(?:19|20)\d{2}|наст\.?(?:\s+врем[яи])?|по\s*наст\.?|present|сейчас)\s*$/i;
+const EXP_DUTY_RE = /^(?:\d{1,2}[.)]\s+|[-–—•]\s+)/;
+
+function periodKey(p) {
+  const s = String(p || "").trim();
+  if (/^(?:(?:по\s*)?наст|present|сейчас)/i.test(s)) return 99999;
+  let m = s.match(/^(\d{1,2})[\/.]((?:19|20)\d{2})/);
+  if (m) return Number(m[2]) + (Math.min(Number(m[1]), 12) - 1) / 12;
+  m = s.match(/((?:19|20)\d{2})/);
+  if (m) return Number(m[1]) + 0.99;
+  return 0;
+}
+
+function yearOf(p) {
+  const m = String(p || "").match(/((?:19|20)\d{2})/);
+  return m ? Number(m[1]) : null;
+}
+
+function normPeriod(p) {
+  const s = String(p || "").trim();
+  if (/^(?:(?:по\s*)?наст|present|сейчас)/i.test(s)) return "наст.";
+  return s;
+}
+
+function clipChars(s, n) {
+  const t = String(s || "").replace(/\s+/g, " ").trim();
+  if (t.length <= n) return t;
+  return t.slice(0, n - 1).replace(/[\s,;:.]+$/, "") + "…";
+}
+
+function stripParens(s) {
+  return String(s || "")
+    .replace(/[(][^)]*[)]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function placesWord(n) {
+  const a = n % 10;
+  const b = n % 100;
+  if (a === 1 && b !== 11) return "место работы";
+  if (a >= 2 && a <= 4 && (b < 10 || b >= 20)) return "места работы";
+  return "мест работы";
+}
+
+function parseExperienceEntries(lines) {
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^опыт(?:\s+работы)?\s*[:：]?\s*$/i.test(lines[i])) {
+      start = i + 1;
+      break;
+    }
+  }
+  if (start < 0) return [];
+  const entries = [];
+  let cur = null;
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i];
+    if (isSectionEnd(line)) {
+      if (cur) {
+        entries.push(cur);
+        cur = null;
+      }
+      break;
+    }
+    const pm = line.match(EXP_PERIOD_RE);
+    if (pm) {
+      if (cur) entries.push(cur);
+      cur = { start: pm[1], end: pm[2], org: "", position: "", duties: [] };
+      continue;
+    }
+    if (!cur) continue;
+    if (EXP_DUTY_RE.test(line)) {
+      cur.duties.push(line);
+      continue;
+    }
+    if (!cur.org) {
+      cur.org = line;
+      continue;
+    }
+    if (!cur.position && !/:\s*$/.test(line)) {
+      cur.position = line;
+      continue;
+    }
+    cur.duties.push(line);
+  }
+  if (cur) entries.push(cur);
+  return entries.filter((e) => e.org || e.position || e.duties.length);
+}
+
+function condenseExperienceEntries(entries) {
+  const nowYear = new Date().getFullYear();
+  const sorted = [...entries].sort((a, b) => periodKey(b.end) - periodKey(a.end));
+  const recent = sorted.filter((e) => periodKey(e.end) >= nowYear - 10);
+  const head = recent.length ? recent.slice(0, 4) : sorted.slice(0, 3);
+  const rest = sorted.filter((e) => !head.includes(e));
+  const out = head.map((e) => {
+    const period = `${normPeriod(e.start)}–${normPeriod(e.end)}`;
+    const position = clipChars(stripParens(e.position), 60);
+    const org = clipChars(e.org, 70);
+    const parts = [position, org].filter(Boolean);
+    return parts.length ? `${period}: ${parts.join(", ")}` : period;
+  });
+  if (rest.length) {
+    const starts = rest.map((e) => yearOf(e.start)).filter((y) => y !== null);
+    const ends = rest.map((e) => yearOf(e.end)).filter((y) => y !== null);
+    const from = starts.length ? Math.min(...starts) : null;
+    const to = ends.length ? Math.max(...ends) : null;
+    const range =
+      from === null ? "" : ` (${from}${to !== null && to !== from ? "–" + to : ""})`;
+    out.push(`ранее: ${rest.length} ${placesWord(rest.length)}${range}`);
+  }
+  return out.join("; ");
+}
+
 function condenseEducation(raw) {
   const uni = grab(raw, "учебное\\s+заведение|вуз|университет");
   const faculty = grab(raw, "факультет");
@@ -391,13 +607,19 @@ function condenseEducation(raw) {
     year && `Окончание: ${year}`,
   ].filter(Boolean);
   if (parts.length) return parts.join(", ");
-  return condenseFragments(raw);
+  const simple = raw
+    .split(/;\s*/)
+    .map((s) => s.trim().replace(/[,;.]+$/, ""))
+    .filter(Boolean)
+    .join(", ");
+  return simple.slice(0, 300);
 }
 
 function extractEducation(lines) {
   const patterns = [
     /образование\s*[:：]\s*(.*)$/i,
     /^образование$/i,
+    /^образование\s*\/\s*квалификация\s*[:：]\s*(.*)$/i,
   ];
   let best = "";
   for (let i = 0; i < lines.length; i++) {
@@ -419,6 +641,7 @@ function extractEducation(lines) {
     }
     for (let j = i + 1; j < lines.length; j++) {
       if (isSectionEnd(lines[j])) break;
+      if (/^должность\s*[:：]/i.test(lines[j])) break;
       parts.push(lines[j].replace(/[,;]\s*$/, ""));
     }
     const block = parts.join("; ");
@@ -427,6 +650,9 @@ function extractEducation(lines) {
   if (!best) return "";
   return condenseEducation(best) || best;
 }
+
+const SECTION_TITLE_RE =
+  /^(?:краткие|личные|основные|общие|дополнительные|анкетные)\s+(?:сведения|информация|данные)|^резюме/i;
 
 function extractDesiredPosition(lines) {
   const labeled = labeledBlock(lines, [
@@ -454,8 +680,26 @@ function extractDesiredPosition(lines) {
       l.replace(/^(?:фио|имя|кандидат)\s*[:：]\s*/i, "") === name
   );
   if (nameIdx < 0) return "";
-  const candidate = lines[nameIdx + 1];
-  return looksLikePosition(candidate) ? candidate : "";
+  for (let i = nameIdx + 1; i <= nameIdx + 6 && i < lines.length; i++) {
+    const line = lines[i];
+    if (isSectionEnd(line) || SECTION_TITLE_RE.test(line)) break;
+    if (looksLikeOrg(line)) continue;
+    if (looksLikePosition(line)) return line;
+  }
+  const position = labeledBlock(lines, [
+    /^должность\s*[:：]\s*(.*)$/i,
+    /^должность$/i,
+  ]);
+  if (position) {
+    for (const seg of position
+      .split(";")
+      .map((s) => s.trim())
+      .filter(Boolean)) {
+      if (looksLikeOrg(seg)) continue;
+      if (looksLikePosition(seg)) return cleanRest(seg);
+    }
+  }
+  return "";
 }
 
 function looksLikePosition(line) {
@@ -470,6 +714,20 @@ function looksLikePosition(line) {
   if (!/^[А-ЯЁA-Z]/.test(line)) return false;
   if (line.split(/\s+/).length > 8) return false;
   return true;
+}
+
+function looksLikeOrg(line) {
+  if (!line) return false;
+  if (/["«»„“”]/.test(line)) return true;
+  if (/^(?:ООО|ЗАО|ПАО|АО|ИП|МУП|ГУП|ФГУП|АНО|НАО|НКО|ОПО)(?![а-яё])/i.test(line))
+    return true;
+  if (
+    /^(?:учреждени|предприяти|организаци|компани|министерств|администрац|бюро|институт|университет|академи|фабрик|завод|центр|управлени|проект)/i.test(
+      line
+    )
+  )
+    return true;
+  return line.length > 60;
 }
 
 function condenseSalary(raw) {
@@ -504,6 +762,8 @@ function extractSalary(lines, text) {
 }
 
 function extractExperience(lines, text) {
+  const entries = parseExperienceEntries(lines);
+  if (entries.length >= 2) return condenseExperienceEntries(entries);
   const labeled = labeledBlock(lines, [
     /^(?:опыт(?:\s+работы)?|стаж)\s*[:：]\s*(.*)$/i,
     /^(?:опыт(?:\s+работы)?|стаж)$/i,
@@ -594,10 +854,85 @@ function render(candidates) {
 
   const note = document.getElementById("storageNote");
   if (note) {
-    note.textContent = serverMode
-      ? "Хранилище: сервер (candidates.json)"
-      : "Хранилище: localStorage (без сервера)";
+    note.textContent =
+      serverMode === false
+        ? "Хранилище: localStorage (без сервера) — ПДн хранятся в этом браузере"
+        : listStatus === "unauthorized"
+          ? "Сервер: нужен токен APP_TOKEN"
+          : "Хранилище: сервер (candidates.json)";
+
+    const oldBtn = document.getElementById("tokenBtn");
+    if (oldBtn) oldBtn.remove();
+    const oldLogout = document.getElementById("logoutBtn");
+    if (oldLogout) oldLogout.remove();
+    if (serverMode !== false && listStatus === "unauthorized") {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.id = "tokenBtn";
+      btn.className = "token-btn";
+      btn.textContent = "Ввести токен";
+      btn.addEventListener("click", () => {
+        const t = window.prompt(
+          "Введите APP_TOKEN из .env на сервере (значение строки APP_TOKEN):"
+        );
+        if (t && t.trim()) {
+          try {
+            sessionStorage.setItem(TOKEN_KEY, t.trim());
+          } catch (e) {}
+          refresh().then(() => {
+            if (listStatus === "unauthorized") {
+              alert("Токен не принят — проверьте значение APP_TOKEN");
+            }
+          });
+        }
+      });
+      note.insertAdjacentElement("afterend", btn);
+    } else if (serverMode !== false && listStatus === "ok") {
+      const out = document.createElement("button");
+      out.type = "button";
+      out.id = "logoutBtn";
+      out.className = "token-btn token-btn-logout";
+      out.textContent = "Выйти";
+      out.title = "Удалить токен из этой вкладки";
+      out.addEventListener("click", () => {
+        try {
+          sessionStorage.removeItem(TOKEN_KEY);
+        } catch (e) {}
+        listStatus = "";
+        refresh();
+      });
+      note.insertAdjacentElement("afterend", out);
+    }
+
+    const oldClear = document.getElementById("clearLocalBtn");
+    if (oldClear) oldClear.remove();
+    if (serverMode === false) {
+      const clear = document.createElement("button");
+      clear.type = "button";
+      clear.id = "clearLocalBtn";
+      clear.className = "token-btn token-btn-clear";
+      clear.textContent = "Очистить локальные данные";
+      clear.title = "Удалить кандидатов (ПДн) из localStorage этого браузера";
+      clear.addEventListener("click", () => {
+        if (!confirm("Удалить всех локальных кандидатов (ПДн) из браузера?")) return;
+        try {
+          localStorage.removeItem(STORAGE_KEY);
+        } catch (e) {}
+        lastLoaded = [];
+        refresh();
+      });
+      note.insertAdjacentElement("afterend", clear);
+    }
   }
+
+  const authorized = serverMode === true && listStatus === "ok";
+  const toolbar = document.querySelector(".candidates-toolbar");
+  if (toolbar) toolbar.hidden = serverMode === true && !authorized;
+  const exportJsonBtn = document.getElementById("exportJson");
+  const exportCsvBtn = document.getElementById("exportCsv");
+  if (exportJsonBtn) exportJsonBtn.hidden = !authorized;
+  if (exportCsvBtn) exportCsvBtn.hidden = !authorized;
+  list.hidden = serverMode === true && !authorized;
 
   if (!candidates.length) {
     const empty = document.createElement("li");
@@ -736,7 +1071,9 @@ function downloadFile(name, type, content) {
 }
 
 function csvCell(value) {
-  return '"' + String(value == null ? "" : value).replace(/"/g, '""') + '"';
+  let s = String(value == null ? "" : value);
+  if (/^\s*[+\-@=]/.test(s)) s = "'" + s;
+  return '"' + s.replace(/"/g, '""') + '"';
 }
 
 function exportJson() {
@@ -769,14 +1106,37 @@ document.getElementById("resumeForm").addEventListener("submit", async (e) => {
   const text = document.getElementById("resumeText").value.trim();
   if (!text) return;
 
+  const errorBox = document.getElementById("formError");
   const button = e.target.querySelector("button[type='submit']");
   button.disabled = true;
   try {
     const structured = await extractStructuredData(text);
-    await addCandidate(text, structured);
+    const item = await addCandidate(text, structured);
+    if (!item) {
+      if (errorBox) {
+        errorBox.textContent =
+          "Резюме НЕ сохранено (" +
+          (lastSaveError || "не удалось сохранить") +
+          "). Ваш текст не потерян — попробуйте отправить ещё раз.";
+        errorBox.hidden = false;
+      }
+      return;
+    }
+    if (errorBox) {
+      errorBox.hidden = true;
+      errorBox.textContent = "";
+    }
     e.target.reset();
     editingId = null;
     await refresh();
+  } catch (err) {
+    if (errorBox) {
+      errorBox.textContent =
+        "Ошибка: " +
+        (err && err.message ? err.message : err) +
+        ". Ваш текст не потерян.";
+      errorBox.hidden = false;
+    }
   } finally {
     button.disabled = false;
   }
