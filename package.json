@@ -21,7 +21,8 @@
     "start": "node src/server.js",
     "test": "node tests/heuristics.test.js && node tests/api.test.js",
     "test:api-extra": "node tests/error502.test.js",
-    "test:ui": "node tests/roles-ui.test.js && node tests/auth-ui.test.js && node tests/save-error.test.js && node tests/csv.test.js && node tests/mobile-viewport.test.js && node tests/mobile-layout.test.js"
+    "test:ui": "node tests/roles-ui.test.js && node tests/auth-ui.test.js && node tests/save-error.test.js && node tests/csv.test.js && node tests/mobile-viewport.test.js && node tests/mobile-layout.test.js",
+    "demo": "node src/demo.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",
