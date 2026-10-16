@@ -1,0 +1,29 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Установка зависимостей
+        run: npm ci
+
+      - name: Синтаксис
+        run: node --check server.js && node --check script.js && node --check heuristics.js
+
+      - name: Тесты
+        run: npm test
+        env:
+          # без .env requireAuth вернул бы 503 вместо 401 — токен обязателен
+          APP_TOKEN: ci-test-token

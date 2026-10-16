@@ -1,6 +1,7 @@
 require("dotenv").config();
 
 const express = require("express");
+const helmet = require("helmet");
 const https = require("https");
 const tls = require("tls");
 const fs = require("fs");
@@ -22,6 +23,22 @@ const CA_PATH = process.env.GIGACHAT_CA_BUNDLE
   ? path.resolve(process.env.GIGACHAT_CA_BUNDLE)
   : path.join(__dirname, "certs", "russian_trusted_root_ca_pem.crt");
 const APP_TOKEN = process.env.APP_TOKEN || "";
+
+// Нативный TLS: задайте TLS_CERT_FILE и TLS_KEY_FILE (PEM) — сервер поднимется
+// по https. Без них — http; на публичном контуре TLS терминирует reverse-proxy
+// (Caddy/nginx), см. Documents/ПРОМЫШЛЕННАЯ.md.
+const TLS_CERT_FILE = process.env.TLS_CERT_FILE
+  ? path.resolve(process.env.TLS_CERT_FILE)
+  : "";
+const TLS_KEY_FILE = process.env.TLS_KEY_FILE
+  ? path.resolve(process.env.TLS_KEY_FILE)
+  : "";
+const useTls = Boolean(
+  TLS_CERT_FILE &&
+    TLS_KEY_FILE &&
+    fs.existsSync(TLS_CERT_FILE) &&
+    fs.existsSync(TLS_KEY_FILE)
+);
 
 const MAX_TEXT_LENGTH = 60000;
 const REQUEST_TIMEOUT_MS = 60000;
@@ -197,6 +214,52 @@ async function extractWithGigaChat(text) {
 const app = express();
 app.use(express.json({ limit: "600kb" }));
 
+// ===== Security-заголовки (helmet) =====
+// Глобально — без CSP и HSTS: /presentation состоит из инлайн-байткода,
+// а HSTS выставляется только на защищённом соединении (см. ниже).
+app.use(
+  helmet({
+    contentSecurityPolicy: false,
+    strictTransportSecurity: false,
+    xFrameOptions: { action: "deny" },
+  })
+);
+// Строгий CSP для приложения и API; презентация инлайн-кодовая — вне CSP.
+const appCsp = helmet.contentSecurityPolicy({
+  useDefaults: false,
+  directives: {
+    defaultSrc: ["'self'"],
+    scriptSrc: ["'self'"],
+    styleSrc: ["'self'"],
+    imgSrc: ["'self'", "data:"],
+    fontSrc: ["'self'"],
+    connectSrc: ["'self'"],
+    objectSrc: ["'none'"],
+    baseUri: ["'self'"],
+    formAction: ["'self'"],
+    frameAncestors: ["'none'"],
+  },
+});
+app.use((req, res, next) => {
+  if (req.path === "/presentation" || req.path === "/presentation.html") {
+    return next();
+  }
+  return appCsp(req, res, next);
+});
+// HSTS — только когда соединение уже защищено (нативный TLS или reverse-proxy
+// с X-Forwarded-Proto: https); на чистом http заголовок не добавляется.
+app.use((req, res, next) => {
+  const secure =
+    req.secure || req.headers["x-forwarded-proto"] === "https";
+  if (secure) {
+    res.setHeader(
+      "Strict-Transport-Security",
+      "max-age=31536000; includeSubDomains"
+    );
+  }
+  next();
+});
+
 function safeEqual(a, b) {
   const ha = createHash("sha256").update(String(a)).digest();
   const hb = createHash("sha256").update(String(b)).digest();
@@ -259,9 +322,10 @@ const STATIC_FILES = {
   "/": ["index.html", "text/html; charset=utf-8"],
   "/index.html": ["index.html", "text/html; charset=utf-8"],
   "/script.js": ["script.js", "text/javascript; charset=utf-8"],
+  "/heuristics.js": ["heuristics.js", "text/javascript; charset=utf-8"],
   "/style.css": ["style.css", "text/css; charset=utf-8"],
-  "/presentation": ["presentation.html", "text/html; charset=utf-8"],
-  "/presentation.html": ["presentation.html", "text/html; charset=utf-8"],
+  "/presentation": ["case/presentation.html", "text/html; charset=utf-8"],
+  "/presentation.html": ["case/presentation.html", "text/html; charset=utf-8"],
 };
 
 app.get(Object.keys(STATIC_FILES), (req, res) => {
@@ -332,8 +396,15 @@ function findCandidate(id) {
 
 app.get("/api/candidates", requireAuth, (req, res) => {
   let list = candidates;
-  const q = typeof req.query.q === "string" ? req.query.q.trim().toLowerCase() : "";
-  if (q) list = list.filter((c) => candidateHaystack(c).includes(q));
+  const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+  if (q.length > 200) {
+    return res.status(400).json({ error: "query too long (max 200)" });
+  }
+  // регистронезависимый поиск — как и локальный фильтр в script.js
+  if (q) {
+    const qq = q.toLowerCase();
+    list = list.filter((c) => candidateHaystack(c).includes(qq));
+  }
   res.json(list);
 });
 
@@ -408,8 +479,28 @@ app.post("/api/extract", extractLimiter, async (req, res) => {
 
 app.use((req, res) => res.status(404).end());
 
-app.listen(PORT, HOST, () => {
+function logListen() {
   console.log(
-    `Prokadry server: http://${HOST}:${PORT} (AI=${AUTH_KEY ? "on" : "off"}, cert=${caList ? "ok" : "missing"}, model=${MODEL})`
+    `Prokadry server: ${useTls ? "https" : "http"}://${HOST}:${PORT} (AI=${AUTH_KEY ? "on" : "off"}, cert=${caList ? "ok" : "missing"}, model=${MODEL}, tls=${useTls ? "on" : "off"})`
   );
-});
+}
+
+if ((TLS_CERT_FILE || TLS_KEY_FILE) && !useTls) {
+  console.warn(
+    "[tls] TLS_CERT_FILE/TLS_KEY_FILE заданы, но файлы не найдены — сервер запущен по HTTP"
+  );
+}
+
+if (useTls) {
+  https
+    .createServer(
+      {
+        cert: fs.readFileSync(TLS_CERT_FILE),
+        key: fs.readFileSync(TLS_KEY_FILE),
+      },
+      app
+    )
+    .listen(PORT, HOST, logListen);
+} else {
+  app.listen(PORT, HOST, logListen);
+}
