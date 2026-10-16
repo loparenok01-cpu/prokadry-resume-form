@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [master]
+    branches: [main, develop]
   pull_request:
 
 jobs:
@@ -20,7 +20,7 @@ jobs:
         run: npm ci
 
       - name: Синтаксис
-        run: node --check server.js && node --check script.js && node --check heuristics.js
+        run: node --check src/server.js && node --check public/js/script.js && node --check public/js/heuristics.js
 
       - name: Тесты
         run: npm test
