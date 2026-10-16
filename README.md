@@ -41,6 +41,8 @@
 - **Адаптивная вёрстка** — корректная работа на 375px (viewport + `@media`), без горизонтального скролла.
 - **Презентация проекта** — самодостаточный HTML (инлайн-ресурсы) по адресу `/presentation`,
   открывается и по `file://` без сервера.
+- **Демо-режим** — `npm run demo` поднимает сервер на вымышленной базе из коробки:
+  без ключа GigaChat, без `.env`, реальная база не затрагивается.
 - **CI** — GitHub Actions: `npm ci` → `node --check` → `npm test` на каждый push/PR.
 
 ## Стек
@@ -80,7 +82,11 @@
 ```
 prokadry-resume-form/
 ├── src/
-│   └── server.js              # Express: статика, GigaChat-клиент, CRUD, auth, rate limit
+│   ├── server.js              # Express: статика, GigaChat-клиент, CRUD, auth, rate limit
+│   └── demo.js                # демо-режим: вымышленная база, токен demo-token
+├── demo/
+│   ├── candidates.demo.json   # демо-кандидаты (вымышленные, коммитятся в репозиторий)
+│   └── candidates.local.json  # рабочая копия демо-базы (создаётся при npm run demo, в .gitignore)
 ├── public/                    # фронтенд (отдаётся сервером и работает по file://)
 │   ├── index.html             # экран: форма + список кандидатов
 │   ├── css/style.css          # стили, зелёная тема, адаптив от 375px
@@ -135,7 +141,17 @@ node -e "console.log(require('crypto').randomBytes(24).toString('base64url'))"
 Вход в базу кандидатов: кнопка **«Ввести токен»** рядом с бейджем хранилища
 либо `http://localhost:3000/?token=ВАШ_ТОКЕН` (адрес сразу очищается от токена).
 
-Проверка:
+### Вариант 3 — демо (без ключа GigaChat и без `.env`)
+
+```bash
+npm run demo                 # http://localhost:3000/?token=demo-token
+```
+
+Сервер поднимается на вымышленной базе `demo/candidates.demo.json` — три кандидата
+для показа интерфейса (список, поиск, правка, экспорт). Разбор резюме идёт встроенной
+эвристикой, ваш реальный `candidates.json` не затрагивается: правки пишутся в
+`demo/candidates.local.json` (в `.gitignore`, сбрасывается удалением файла).
+Проверка демо:
 
 ```bash
 node --check src/server.js && node --check public/js/script.js
