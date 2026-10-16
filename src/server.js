@@ -8,6 +8,8 @@ const fs = require("fs");
 const path = require("path");
 const { randomUUID, createHash, timingSafeEqual } = require("crypto");
 
+const ROOT = path.join(__dirname, "..");
+
 const PORT = Number(process.env.PORT) || 3000;
 const HOST = process.env.HOST || "127.0.0.1";
 const AUTH_KEY = process.env.GIGACHAT_AUTH_KEY || "";
@@ -21,12 +23,12 @@ const API_URL =
   "https://api.giga.chat/v1/chat/completions";
 const CA_PATH = process.env.GIGACHAT_CA_BUNDLE
   ? path.resolve(process.env.GIGACHAT_CA_BUNDLE)
-  : path.join(__dirname, "certs", "russian_trusted_root_ca_pem.crt");
+  : path.join(ROOT, "certs", "russian_trusted_root_ca_pem.crt");
 const APP_TOKEN = process.env.APP_TOKEN || "";
 
 // Нативный TLS: задайте TLS_CERT_FILE и TLS_KEY_FILE (PEM) — сервер поднимется
 // по https. Без них — http; на публичном контуре TLS терминирует reverse-proxy
-// (Caddy/nginx), см. Documents/ПРОМЫШЛЕННАЯ.md.
+// (Caddy/nginx), см. docs/ПРОМЫШЛЕННАЯ.md.
 const TLS_CERT_FILE = process.env.TLS_CERT_FILE
   ? path.resolve(process.env.TLS_CERT_FILE)
   : "";
@@ -319,19 +321,23 @@ const postCandidateLimiter = createRateLimiter(
 );
 
 const STATIC_FILES = {
-  "/": ["index.html", "text/html; charset=utf-8"],
-  "/index.html": ["index.html", "text/html; charset=utf-8"],
-  "/script.js": ["script.js", "text/javascript; charset=utf-8"],
-  "/heuristics.js": ["heuristics.js", "text/javascript; charset=utf-8"],
-  "/style.css": ["style.css", "text/css; charset=utf-8"],
-  "/presentation": ["case/presentation.html", "text/html; charset=utf-8"],
-  "/presentation.html": ["case/presentation.html", "text/html; charset=utf-8"],
+  "/": ["public/index.html", "text/html; charset=utf-8"],
+  "/index.html": ["public/index.html", "text/html; charset=utf-8"],
+  "/css/style.css": ["public/css/style.css", "text/css; charset=utf-8"],
+  "/js/script.js": ["public/js/script.js", "text/javascript; charset=utf-8"],
+  "/js/heuristics.js": ["public/js/heuristics.js", "text/javascript; charset=utf-8"],
+  // legacy-пути (старые ссылки/кэш) — ведут на те же файлы
+  "/style.css": ["public/css/style.css", "text/css; charset=utf-8"],
+  "/script.js": ["public/js/script.js", "text/javascript; charset=utf-8"],
+  "/heuristics.js": ["public/js/heuristics.js", "text/javascript; charset=utf-8"],
+  "/presentation": ["public/presentation.html", "text/html; charset=utf-8"],
+  "/presentation.html": ["public/presentation.html", "text/html; charset=utf-8"],
 };
 
 app.get(Object.keys(STATIC_FILES), (req, res) => {
   const [file, type] = STATIC_FILES[req.path];
   res.type(type);
-  res.sendFile(path.join(__dirname, file));
+  res.sendFile(path.join(ROOT, file));
 });
 
 app.get("/api/health", (req, res) => {
@@ -348,7 +354,7 @@ app.get("/api/health", (req, res) => {
 
 const CANDIDATES_FILE = process.env.CANDIDATES_FILE
   ? path.resolve(process.env.CANDIDATES_FILE)
-  : path.join(__dirname, "candidates.json");
+  : path.join(ROOT, "candidates.json");
 const STRUCTURED_KEYS = [
   "name",
   "desiredPosition",

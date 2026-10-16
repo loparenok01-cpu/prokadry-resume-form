@@ -1,12 +1,27 @@
 {
-  "name": "prokadry-resume",
+  "name": "prokadry-resume-form",
   "version": "1.0.0",
-  "description": "Форма приёма резюме кадрового агентства «ПроКадры»: эвристика + GigaChat API",
+  "description": "Форма приёма резюме кадрового агентства «ПроКадры»: структурирование резюме эвристикой и GigaChat API",
+  "keywords": [
+    "resume",
+    "hr",
+    "recruitment",
+    "gigachat",
+    "nlp",
+    "express",
+    "portfolio"
+  ],
+  "license": "MIT",
   "private": true,
-  "main": "server.js",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
-    "start": "node server.js",
-    "test": "node .temp/heuristics-test.js && node .temp/api-test.js"
+    "start": "node src/server.js",
+    "test": "node tests/heuristics.test.js && node tests/api.test.js",
+    "test:api-extra": "node tests/error502.test.js",
+    "test:ui": "node tests/roles-ui.test.js && node tests/auth-ui.test.js && node tests/save-error.test.js && node tests/csv.test.js && node tests/mobile-viewport.test.js && node tests/mobile-layout.test.js"
   },
   "dependencies": {
     "dotenv": "^16.4.7",

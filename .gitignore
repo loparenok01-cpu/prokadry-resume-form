@@ -1,8 +1,8 @@
-# Временные файлы проекта
-.temp/
-
 # Зависимости Node.js
 node_modules/
+
+# Временные файлы разработки (логи, отладочные скрипты, черновые скриншоты)
+.temp/
 
 # Данные кандидатов (персональные данные, только локально)
 candidates.json
@@ -12,6 +12,24 @@ candidates.json.tmp
 .env
 .env.local
 
+# Локальные ключи доступа и журнал действий (создаются сервером)
+tokens.json
+actions.log
+
+# Временные артефакты тестов
+tests/candidates-*.json
+tests/tokens-*.json
+tests/actions-*.log
+tests/*.log
+tests/*.png
+*.json.tmp
+
+# Конфигурация агента-разработчика (к проекту не относится)
+opencode.json
+
+# Артефакты сборки портфолио
+dist/
+
 # Бинарные и тяжёлые файлы
 *.zip
 *.docx
@@ -19,3 +37,7 @@ candidates.json.tmp
 *.jpeg
 *.png
 *.pdf
+
+# Скриншоты документации — нужны в репозитории
+!docs/screenshots/*.png
+!docs/screenshots/*.jpg
