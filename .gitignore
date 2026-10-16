@@ -8,6 +8,9 @@ node_modules/
 candidates.json
 candidates.json.tmp
 
+# Демо-база: рабочая копия создается при npm run demo
+demo/candidates.local.json
+
 # Секреты и локальные настройки
 .env
 .env.local
